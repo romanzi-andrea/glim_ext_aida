@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 17)
 find_package(glim REQUIRED)
 find_package(GTSAM REQUIRED)
 find_package(spdlog REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 if($ENV{ROS_VERSION} EQUAL 2)
   # ROS2
