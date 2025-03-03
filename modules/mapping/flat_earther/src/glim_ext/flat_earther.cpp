@@ -15,6 +15,8 @@
 #include <gtsam_ext/level_factor.hpp>
 #include <gtsam_ext/position_kdtree.hpp>
 
+#include <glim/util/convert_to_string.hpp>
+
 namespace glim {
 
 using gtsam::symbol_shorthand::X;
@@ -24,7 +26,7 @@ using Callbacks = GlobalMappingCallbacks;
 class FlatEarther : public ExtensionModule {
 public:
   FlatEarther() : logger(create_module_logger("flat_earther")) {
-    logger->info("Starting flat earther module");
+    logger->info("Initiliazing flat earther module");
     const std::string config_path = glim::GlobalConfigExt::get_config_path("config_flat_earther");
     logger->info("config_flat_earther:{}", config_path);
 
@@ -39,6 +41,14 @@ public:
     level_factor_stddev = config.param<double>("flat_earther", "level_factor_stddev", 1e-3);
     robust_kernel_width = config.param<double>("flat_earther", "robust_kernel_width", 1.0);
 
+    enable_flat_earther = config.param<bool>("flat_earther", "enable_flat_earther", true);
+
+    if (enable_flat_earther) {
+      logger->info("Flat earther module enabled");
+    } else {
+      logger->info("Flat earther module disabled");
+    }
+
     Callbacks::on_insert_submap.add([this](const SubMap::ConstPtr& submap) { on_insert_submap(submap); });
     Callbacks::on_update_submaps.add([this](const std::vector<SubMap::Ptr>& submaps) { on_update_submaps(submaps); });
     Callbacks::on_smoother_update.add(
@@ -48,56 +58,76 @@ public:
   ~FlatEarther() {}
 
   void on_insert_submap(const SubMap::ConstPtr& submap) {
-    logger->debug("on_insert_submap {}", submap->id);
-    double travel_distance = 0.0;
-    Eigen::Vector3d last_pos = submap->T_world_origin.translation();
-    size_t closest_max_submap_id = std::numeric_limits<size_t>::max();
+    if (enable_flat_earther){
+      logger->debug("on_insert_submap {}", submap->id);
+      double travel_distance = 0.0;
+      Eigen::Vector3d last_pos = submap->T_world_origin.translation();
+      size_t closest_max_submap_id = std::numeric_limits<size_t>::max();
 
-    for (auto itr = submap_positions.rbegin(); itr != submap_positions.rend(); itr++) {
-      const double dist = (last_pos - itr->second).norm();
-      travel_distance += dist;
-      last_pos = itr->second;
+      for (auto itr = submap_positions.rbegin(); itr != submap_positions.rend(); itr++) {
+        const double dist = (last_pos - itr->second).norm();
+        travel_distance += dist;
+        last_pos = itr->second;
 
-      if (travel_distance > min_travel_distance) {
-        closest_max_submap_id = itr->first;
-        break;
-      }
-    }
-
-    if (closest_max_submap_id > submap->id) {
-      return;
-    }
-
-    const Eigen::Vector3d pos = submap->T_world_origin.translation();
-
-    std::vector<size_t> k_indices(num_nearest_neighbors);
-    std::vector<double> k_sq_dists(num_nearest_neighbors);
-    const size_t num_found = submap_position_kdtree->knn_search(pos.data(), num_nearest_neighbors, k_indices.data(), k_sq_dists.data());
-
-    k_indices.resize(num_found);
-    k_sq_dists.resize(num_found);
-
-    std::uniform_int_distribution<> udist(0, submap_positions.size() - 1);
-    for (int i = 0; i < num_random_neighbors; i++) {
-      const size_t random_index = udist(mt);
-      k_indices.push_back(submap_positions[random_index].first);
-      k_sq_dists.push_back((pos - submap_positions[random_index].second).squaredNorm());
-    }
-
-    for (int i = 0; i < num_found; i++) {
-      if (k_sq_dists[i] > max_neighbor_distance * max_neighbor_distance || k_indices[i] > closest_max_submap_id) {
-        continue;
+        if (travel_distance > min_travel_distance) {
+          closest_max_submap_id = itr->first;
+          break;
+        }
       }
 
-      logger->debug("create level factor between {} and {}", submap->id, k_indices[i]);
-      const double dist = std::sqrt(k_sq_dists[i]);
-      const double weight = std::exp(-std::pow(2.0 * dist / max_neighbor_distance, 2));
-
-      gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Isotropic::Sigma(1, level_factor_stddev / weight);
-      if (robust_kernel_width > 0.0) {
-        noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(robust_kernel_width), noise_model);
+      if (closest_max_submap_id > submap->id) {
+        return;
       }
-      new_factors.emplace_shared<LevelFactor>(X(k_indices[i]), X(submap->id), noise_model);
+
+      const Eigen::Vector3d pos = submap->T_world_origin.translation();
+
+      std::vector<size_t> k_indices(num_nearest_neighbors);
+      std::vector<double> k_sq_dists(num_nearest_neighbors);
+      const size_t num_found = submap_position_kdtree->knn_search(pos.data(), num_nearest_neighbors, k_indices.data(), k_sq_dists.data());
+
+      k_indices.resize(num_found);
+      k_sq_dists.resize(num_found);
+
+      std::uniform_int_distribution<> udist(0, submap_positions.size() - 1);
+      for (int i = 0; i < num_random_neighbors; i++) {
+        const size_t random_index = udist(mt);
+        k_indices.push_back(submap_positions[random_index].first);
+        k_sq_dists.push_back((pos - submap_positions[random_index].second).squaredNorm());
+      }
+
+      for (int i = 0; i < num_found; i++) {
+        if (k_sq_dists[i] > max_neighbor_distance * max_neighbor_distance || k_indices[i] > closest_max_submap_id) {
+          continue;
+        }
+
+        logger->debug("create level factor between {} and {}", submap->id, k_indices[i]);
+        const double dist = std::sqrt(k_sq_dists[i]);
+        const double weight = std::exp(-std::pow(2.0 * dist / max_neighbor_distance, 2));
+
+        logger->debug("Adding flattening factor with noise = {}", level_factor_stddev / weight);
+
+        gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Isotropic::Sigma(1, level_factor_stddev / weight);
+        if (robust_kernel_width > 0.0) {
+          noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(robust_kernel_width), noise_model);
+        }
+        new_factors.emplace_shared<LevelFactor>(X(k_indices[i]), X(submap->id), noise_model);
+
+
+        // double flatFactorNoise = level_factor_stddev / weight;
+
+        // gtsam::Vector Vector3(3);
+        // // Vector3 << max(gnss_cov(0), 1.0f), max( gnss_cov(1), 1.0f), max( gnss_cov(2), 1.0f);
+        // Vector3 << 1e6, 1e6, flatFactorNoise;
+
+        // gtsam::noiseModel::Diagonal::shared_ptr flat_earther_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+
+        // logger->debug("Adding Flat earther factor = {}", convert_to_string(Vector3));
+
+        // new_factors.emplace_shared<gtsam::GPSFactor>(X(k_indices[i]), gtsam::Point3(0.0, 0.0, 0.0), flat_earther_noise);
+
+        }
+    } else {
+        logger->debug("Flat earther disabled! Change enable_flat_earther parameter!");
     }
   }
 
@@ -136,6 +166,8 @@ private:
 
   double level_factor_stddev;
   double robust_kernel_width;
+
+  bool enable_flat_earther; //if this is true the module is enabled 
 
   std::vector<std::pair<int, Eigen::Vector3d>> submap_positions;
   std::unique_ptr<PositionKdTree> submap_position_kdtree;
