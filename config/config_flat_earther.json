@@ -7,7 +7,7 @@
     "max_neighbor_distance": 1e4,
     "num_nearest_neighbors": 10,
     "num_random_neighbors": 10,
-    "level_factor_stddev": 1e-5,
+    "level_factor_stddev": 1e-8,
     "robust_kernel_width": -1.0
   }
 }

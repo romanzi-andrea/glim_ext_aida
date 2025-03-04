@@ -13,6 +13,7 @@
 
 #include <glim_ext/util/config_ext.hpp>
 #include <gtsam_ext/level_factor.hpp>
+#include <gtsam/navigation/GPSFactor.h>
 #include <gtsam_ext/position_kdtree.hpp>
 
 #include <glim/util/convert_to_string.hpp>
@@ -106,24 +107,24 @@ public:
 
         logger->debug("Adding flattening factor with noise = {}", level_factor_stddev / weight);
 
-        gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Isotropic::Sigma(1, level_factor_stddev / weight);
-        if (robust_kernel_width > 0.0) {
-          noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(robust_kernel_width), noise_model);
-        }
-        new_factors.emplace_shared<LevelFactor>(X(k_indices[i]), X(submap->id), noise_model);
+        // gtsam::SharedNoiseModel noise_model = gtsam::noiseModel::Isotropic::Sigma(1, level_factor_stddev / weight);
+        // if (robust_kernel_width > 0.0) {
+        //   noise_model = gtsam::noiseModel::Robust::Create(gtsam::noiseModel::mEstimator::Huber::Create(robust_kernel_width), noise_model);
+        // }
+        // new_factors.emplace_shared<LevelFactor>(X(k_indices[i]), X(submap->id), noise_model);
 
 
-        // double flatFactorNoise = level_factor_stddev / weight;
+        double flatFactorNoise = level_factor_stddev / weight;
 
-        // gtsam::Vector Vector3(3);
-        // // Vector3 << max(gnss_cov(0), 1.0f), max( gnss_cov(1), 1.0f), max( gnss_cov(2), 1.0f);
-        // Vector3 << 1e6, 1e6, flatFactorNoise;
+        gtsam::Vector Vector3(3);
+        // Vector3 << max(gnss_cov(0), 1.0f), max( gnss_cov(1), 1.0f), max( gnss_cov(2), 1.0f);
+        Vector3 << 1e6, 1e6, flatFactorNoise;
 
-        // gtsam::noiseModel::Diagonal::shared_ptr flat_earther_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+        gtsam::noiseModel::Diagonal::shared_ptr flat_earther_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
 
-        // logger->debug("Adding Flat earther factor = {}", convert_to_string(Vector3));
+        logger->debug("Adding Flat earther factor = {}", convert_to_string(Vector3));
 
-        // new_factors.emplace_shared<gtsam::GPSFactor>(X(k_indices[i]), gtsam::Point3(0.0, 0.0, 0.0), flat_earther_noise);
+        new_factors.emplace_shared<gtsam::GPSFactor>(X(k_indices[i]), gtsam::Point3(0.0, 0.0, 0.0), flat_earther_noise);
 
         }
     } else {
