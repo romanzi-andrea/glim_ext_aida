@@ -28,6 +28,8 @@ if(DEFINED ENV{ROS_VERSION})
 endif()
 
 find_package(glim REQUIRED)
+find_package(move_common_msgs REQUIRED)
+
 
 add_library(glim_ext SHARED
   src/glim_ext/util/config_ext.cpp
@@ -131,7 +133,7 @@ if(DEFINED ENV{ROS_VERSION})
   if($ENV{ROS_VERSION} EQUAL 2)
     # ROS2
     install(DIRECTORY config DESTINATION share/glim_ext)
-    ament_target_dependencies(glim_ext glim)
+    ament_target_dependencies(glim_ext glim move_common_msgs)
     ament_export_libraries(${glim_ext_LIBRARIES})
     ament_package()
   elseif($ENV{ROS_VERSION} EQUAL 1)
