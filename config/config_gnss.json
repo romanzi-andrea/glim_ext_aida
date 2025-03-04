@@ -6,6 +6,8 @@
       0.03,
       0.03,
       0.06
-    ]
+    ],
+    "gnss_meas_type": "lla"           // lla or enu
+    
   }
 }

@@ -69,6 +69,8 @@ public:
     prior_inf_scale = config.param<Eigen::Vector3d>("gnss", "prior_inf_scale", Eigen::Vector3d(1e3, 1e3, 0.0));
     min_baseline = config.param<double>("gnss", "min_baseline", 5.0);
 
+    gnss_meas_type = config.param<std::string>("gnss", "gnss_meas_type", "enu");
+
     transformation_initialized = false;
     T_world_utm.setIdentity();
 
@@ -88,8 +90,17 @@ public:
 
   virtual std::vector<GenericTopicSubscription::Ptr> create_subscriptions() override {
     // const auto sub = std::make_shared<TopicSubscription<PoseWithCovarianceStamped>>(gnss_topic, [this](const PoseWithCovarianceStampedConstPtr msg) { gnss_callback(msg); });
-    const auto sub = std::make_shared<TopicSubscription<NavSatFix>>(gnss_topic, [this](const NavSatFixConstPtr msg) {navsatfix_callback(msg); });
-    return {sub};
+    if(gnss_meas_type.compare("enu") == 0){
+      logger->info("Working on!!! IT'll crash :)");
+      const auto sub = std::make_shared<TopicSubscription<NavSatFix>>(gnss_topic, [this](const NavSatFixConstPtr msg) {navsatfix_callback(msg); }); 
+      return {sub};
+    } else if(gnss_meas_type.compare("lla") == 0) {
+      const auto sub = std::make_shared<TopicSubscription<NavSatFix>>(gnss_topic, [this](const NavSatFixConstPtr msg) {navsatfix_callback(msg); }); 
+      return {sub};
+    } else {
+      logger->error("[ERROR] gnss_meas_type not supported! Choose between 'lla' and 'enu'");
+      return {};    // Returning an empty vector to handle the error case
+    }
   }
 
   void gnss_callback(const PoseWithCovarianceStampedConstPtr& gnss_msg) {
@@ -199,138 +210,146 @@ public:
     std::deque<SubMap::ConstPtr> submap_queue;
 
     while (!kill_switch) {
-      // Convert GeoPoint(lat/lon) to UTM
-      const auto gnss_data = input_gnss_queue.get_all_and_clear();
-      const auto gnss_covariances = gnss_covariances_queue.get_all_and_clear();
-      utm_queue.insert(utm_queue.end(), gnss_data.begin(), gnss_data.end());
-      utm_cov_queue.insert(utm_cov_queue.end(), gnss_covariances.begin(), gnss_covariances.end());
 
-      // Add new submaps
-      const auto new_submaps = input_submap_queue.get_all_and_clear();
-      if (new_submaps.empty()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-        continue;
-      }
-      submap_queue.insert(submap_queue.end(), new_submaps.begin(), new_submaps.end());
+      if(gnss_meas_type.compare("lla") == 0){
+        // Convert GeoPoint(lat/lon) to UTM
+        const auto gnss_data = input_gnss_queue.get_all_and_clear();
+        const auto gnss_covariances = gnss_covariances_queue.get_all_and_clear();
+        utm_queue.insert(utm_queue.end(), gnss_data.begin(), gnss_data.end());
+        utm_cov_queue.insert(utm_cov_queue.end(), gnss_covariances.begin(), gnss_covariances.end());
 
-      // Remove submaps that are created earlier than the oldest GNSS data
-      while (!utm_queue.empty() && !submap_queue.empty() && submap_queue.front()->frames.front()->stamp < utm_queue.front()[0]) {
-        submap_queue.pop_front();
-      }
-
-      // Interpolate UTM coords and associate with submaps
-      while (!utm_queue.empty() && !submap_queue.empty() && submap_queue.front()->frames.front()->stamp > utm_queue.front()[0] &&
-           submap_queue.front()->frames.back()->stamp < utm_queue.back()[0]) {
-        const auto& submap = submap_queue.front();
-        const double stamp = submap->frames[submap->frames.size() / 2]->stamp;
- 
-        // find the closest right element
-        const auto right = std::lower_bound(utm_queue.begin(), utm_queue.end(), stamp, [](const Eigen::Vector4d& utm, const double t) { return utm[0] < t; });
-        if (right == utm_queue.end() || (right + 1) == utm_queue.end()) {
-            logger->warn("invalid condition in GNSS global module!!");
-            break;
+        // Add new submaps
+        const auto new_submaps = input_submap_queue.get_all_and_clear();
+        if (new_submaps.empty()) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          continue;
         }
-        const auto left = right - 1;
+        submap_queue.insert(submap_queue.end(), new_submaps.begin(), new_submaps.end());
 
-        const auto cov_right = utm_cov_queue.begin() + (right - utm_queue.begin());
-        const auto cov_left = cov_right - 1;
-            
-        logger->debug("submap={:.6f} utm_left={:.6f} utm_right={:.6f}", stamp, (*left)[0], (*right)[0]);
-
-        const double tl = (*left)[0];
-        const double tr = (*right)[0];
-        const double p = (stamp - tl) / (tr - tl);
-        const Eigen::Vector4d interpolated_utm = (1.0 - p) * (*left) + p * (*right);
-        const Eigen::Vector4d interpolated_cov = (1.0 - p) * (*cov_left) + p * (*cov_right);
-
-        submaps.push_back(submap);
-        submap_coords.push_back(interpolated_utm);
-        submap_covariances.push_back(interpolated_cov);
-
-        submap_queue.pop_front();
-        utm_queue.erase(utm_queue.begin(), left);
-        utm_cov_queue.erase(utm_cov_queue.begin(), cov_left);
-      }
-
-      // Initialize T_world_utm if is not already intialized and if enough space has been travelled and the covariance of the gps is small enough
-      if (!transformation_initialized && !submaps.empty() && 
-          (submaps.front()->T_world_origin.inverse() * submaps.back()->T_world_origin).translation().norm() > min_baseline) { 
-            
-        const Eigen::Vector3d gnss_cov = submap_covariances.back().tail<3>();
-
-        if (gnss_cov(0) <= 0.001 && gnss_cov(1) <= 0.001 && gnss_cov(2) <= 0.01) {
-          Eigen::Vector3d mean_est = Eigen::Vector3d::Zero();
-          Eigen::Vector3d mean_gnss = Eigen::Vector3d::Zero();
-          for (int i = 0; i < submaps.size(); i++) {
-              mean_est += submaps[i]->T_world_origin.translation();
-              // mean_gnss += submap_coords[i].tail<3>();
-          }
-          mean_est /= submaps.size();
-          // mean_gnss /= submaps.size();
-
-          // mean_est = submaps.back()->T_world_origin.translation();
-          mean_gnss = submap_coords.back().tail<3>();
-
-          Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-          for (int i = 0; i < submaps.size(); i++) {
-              const Eigen::Vector3d centered_est = submaps[i]->T_world_origin.translation() - mean_est;
-              const Eigen::Vector3d centered_gnss = submap_coords[i].tail<3>() - mean_gnss;
-              cov += centered_gnss * centered_est.transpose();
-          }
-          cov /= submaps.size();
-
-          const Eigen::JacobiSVD<Eigen::Matrix2d> svd(cov.block<2, 2>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
-          const Eigen::Matrix2d U = svd.matrixU();
-          const Eigen::Matrix2d V = svd.matrixV();
-          const Eigen::Matrix2d D = svd.singularValues().asDiagonal();
-          Eigen::Matrix2d S = Eigen::Matrix2d::Identity();
-
-          const double det = U.determinant() * V.determinant();
-          if (det < 0.0) {
-              S(1, 1) = -1;
-          }
-
-          Eigen::Isometry3d T_utm_world = Eigen::Isometry3d::Identity();
-          T_utm_world.linear().block<2, 2>(0, 0) = U * S * V.transpose();
-          T_utm_world.translation() = mean_gnss - T_utm_world.linear() * mean_est;
-
-          T_world_utm = T_utm_world.inverse();
-
-          for (int i = 0; i < submaps.size(); i++) {
-              const Eigen::Vector3d gnss = T_world_utm * submap_coords[i].tail<3>();
-              logger->debug("submap={} gnss={}", convert_to_string(submaps[i]->T_world_origin.translation().eval()), convert_to_string(gnss));
-          }
-
-          logger->info("T_world_utm={}", convert_to_string(T_world_utm));
-          transformation_initialized = true;
+        // Remove submaps that are created earlier than the oldest GNSS data
+        while (!utm_queue.empty() && !submap_queue.empty() && submap_queue.front()->frames.front()->stamp < utm_queue.front()[0]) {
+          submap_queue.pop_front();
         }
-      }
 
-      // Add GPS factor
-      if (transformation_initialized) {
-          const Eigen::Vector3d xyz = submap_coords.back().tail<3>();
+        // Interpolate UTM coords and associate with submaps
+        while (!utm_queue.empty() && !submap_queue.empty() && submap_queue.front()->frames.front()->stamp > utm_queue.front()[0] &&
+            submap_queue.front()->frames.back()->stamp < utm_queue.back()[0]) {
+          const auto& submap = submap_queue.front();
+          const double stamp = submap->frames[submap->frames.size() / 2]->stamp;
+  
+          // find the closest right element
+          const auto right = std::lower_bound(utm_queue.begin(), utm_queue.end(), stamp, [](const Eigen::Vector4d& utm, const double t) { return utm[0] < t; });
+          if (right == utm_queue.end() || (right + 1) == utm_queue.end()) {
+              logger->warn("invalid condition in GNSS global module!!");
+              break;
+          }
+          const auto left = right - 1;
+
+          const auto cov_right = utm_cov_queue.begin() + (right - utm_queue.begin());
+          const auto cov_left = cov_right - 1;
+              
+          logger->debug("submap={:.6f} utm_left={:.6f} utm_right={:.6f}", stamp, (*left)[0], (*right)[0]);
+
+          const double tl = (*left)[0];
+          const double tr = (*right)[0];
+          const double p = (stamp - tl) / (tr - tl);
+          const Eigen::Vector4d interpolated_utm = (1.0 - p) * (*left) + p * (*right);
+          const Eigen::Vector4d interpolated_cov = (1.0 - p) * (*cov_left) + p * (*cov_right);
+
+          submaps.push_back(submap);
+          submap_coords.push_back(interpolated_utm);
+          submap_covariances.push_back(interpolated_cov);
+
+          submap_queue.pop_front();
+          utm_queue.erase(utm_queue.begin(), left);
+          utm_cov_queue.erase(utm_cov_queue.begin(), cov_left);
+        }
+
+        // Initialize T_world_utm if is not already intialized and if enough space has been travelled and the covariance of the gps is small enough
+        if (!transformation_initialized && !submaps.empty() && 
+            (submaps.front()->T_world_origin.inverse() * submaps.back()->T_world_origin).translation().norm() > min_baseline) { 
+              
           const Eigen::Vector3d gnss_cov = submap_covariances.back().tail<3>();
 
-          logger->debug("submap={} gnss={}, gnss_cov={}", convert_to_string(submaps.back()->T_world_origin.translation().eval()), convert_to_string(xyz), convert_to_string(gnss_cov));
+          if (gnss_cov(0) <= 0.001 && gnss_cov(1) <= 0.001 && gnss_cov(2) <= 0.01) {
+            Eigen::Vector3d mean_est = Eigen::Vector3d::Zero();
+            Eigen::Vector3d mean_gnss = Eigen::Vector3d::Zero();
+            for (int i = 0; i < submaps.size(); i++) {
+                mean_est += submaps[i]->T_world_origin.translation();
+                // mean_gnss += submap_coords[i].tail<3>();
+            }
+            mean_est /= submaps.size();
+            // mean_gnss /= submaps.size();
 
-          const auto& submap = submaps.back();           
+            // mean_est = submaps.back()->T_world_origin.translation();
+            mean_gnss = submap_coords.back().tail<3>();
 
-          // insert the gnss pose in the graph only if the covariance is smaller than a treshold
-          if (gnss_cov(0) < 1.0 && gnss_cov(1) < 1.0 && gnss_cov(2) < 1.0) {  
+            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+            for (int i = 0; i < submaps.size(); i++) {
+                const Eigen::Vector3d centered_est = submaps[i]->T_world_origin.translation() - mean_est;
+                const Eigen::Vector3d centered_gnss = submap_coords[i].tail<3>() - mean_gnss;
+                cov += centered_gnss * centered_est.transpose();
+            }
+            cov /= submaps.size();
 
-            gtsam::Vector Vector3(3);
-            // Vector3 << max(gnss_cov(0), 1.0f), max( gnss_cov(1), 1.0f), max( gnss_cov(2), 1.0f);
-            Vector3 << gnss_cov(0), gnss_cov(1), gnss_cov(2);
+            const Eigen::JacobiSVD<Eigen::Matrix2d> svd(cov.block<2, 2>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
+            const Eigen::Matrix2d U = svd.matrixU();
+            const Eigen::Matrix2d V = svd.matrixV();
+            const Eigen::Matrix2d D = svd.singularValues().asDiagonal();
+            Eigen::Matrix2d S = Eigen::Matrix2d::Identity();
 
-            gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+            const double det = U.determinant() * V.determinant();
+            if (det < 0.0) {
+                S(1, 1) = -1;
+            }
 
-            logger->info("Adding GNSS pose with noise: {}", convert_to_string(Vector3));
+            Eigen::Isometry3d T_utm_world = Eigen::Isometry3d::Identity();
+            T_utm_world.linear().block<2, 2>(0, 0) = U * S * V.transpose();
+            T_utm_world.translation() = mean_gnss - T_utm_world.linear() * mean_est;
 
-            gtsam::NonlinearFactor::shared_ptr factor(new gtsam::GPSFactor(X(submap->id), gtsam::Point3(xyz), gps_noise));
+            T_world_utm = T_utm_world.inverse();
 
-            output_factors.push_back(factor);
+            for (int i = 0; i < submaps.size(); i++) {
+                const Eigen::Vector3d gnss = T_world_utm * submap_coords[i].tail<3>();
+                logger->debug("submap={} gnss={}", convert_to_string(submaps[i]->T_world_origin.translation().eval()), convert_to_string(gnss));
+            }
+
+            logger->info("T_world_utm={}", convert_to_string(T_world_utm));
+            transformation_initialized = true;
           }
+        }
+
+        // Add GPS factor
+        if (transformation_initialized) {
+            const Eigen::Vector3d xyz = submap_coords.back().tail<3>();
+            const Eigen::Vector3d gnss_cov = submap_covariances.back().tail<3>();
+
+            logger->debug("submap={} gnss={}, gnss_cov={}", convert_to_string(submaps.back()->T_world_origin.translation().eval()), convert_to_string(xyz), convert_to_string(gnss_cov));
+
+            const auto& submap = submaps.back();           
+
+            // insert the gnss pose in the graph only if the covariance is smaller than a treshold
+            if (gnss_cov(0) < 1.0 && gnss_cov(1) < 1.0 && gnss_cov(2) < 1.0) {  
+
+              gtsam::Vector Vector3(3);
+              // Vector3 << max(gnss_cov(0), 1.0f), max( gnss_cov(1), 1.0f), max( gnss_cov(2), 1.0f);
+              Vector3 << gnss_cov(0), gnss_cov(1), gnss_cov(2);
+
+              gtsam::noiseModel::Diagonal::shared_ptr gps_noise = gtsam::noiseModel::Diagonal::Variances(Vector3);
+
+              logger->info("Adding GNSS pose with noise: {}", convert_to_string(Vector3));
+
+              gtsam::NonlinearFactor::shared_ptr factor(new gtsam::GPSFactor(X(submap->id), gtsam::Point3(xyz), gps_noise));
+
+              output_factors.push_back(factor);
+            }
+         }
+      } else if(gnss_meas_type.compare("enu") == 0){ 
+        logger->info("WORKING ONN!!!!");
+      } else {
+        logger->error("[ERROR] gnss_meas_type not supported! Choose between 'lla' and 'enu'");
       }
+
     }
   }
 
@@ -350,6 +369,7 @@ private:
   std::string gnss_topic;
   Eigen::Vector3d prior_inf_scale;
   double min_baseline;
+  std::string gnss_meas_type;
 
   bool transformation_initialized;
   Eigen::Isometry3d T_world_utm;
