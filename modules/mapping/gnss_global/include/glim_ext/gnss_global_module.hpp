@@ -134,7 +134,7 @@ public:
     
     // // bring the gnss data in base link reference frame
     Eigen::Vector3d point(x,y,z);
-    Eigen::Vector3d transformed_gnss_data = T_base_link_gnss * point;
+    Eigen::Vector3d transformed_gnss_data = T_base_link_gnss.inverse() * point;
 
     Eigen::Vector4d gnss_data;
     Eigen::Vector4d gnss_covariance;
