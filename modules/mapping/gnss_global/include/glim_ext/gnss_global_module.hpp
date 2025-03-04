@@ -51,9 +51,9 @@ namespace glim {
 using gtsam::symbol_shorthand::X;
 
 /**
- * @brief Naive implementation of GNSS constraints for the global optimization.
- * @note  This implementation is very naive and ignores the IMU-GNSS transformation and GNSS observation covariance.
- *        If you use a precise GNSS (e.g., RTK), consider asking for a closed-source extension module with better GNSS handling.
+ * @brief Implementation of GNSS constraints for the global optimization.
+ * @note  
+ *        
  */
 class GNSSGlobal : public ExtensionModuleBase {
 public:
@@ -70,6 +70,8 @@ public:
     min_baseline = config.param<double>("gnss", "min_baseline", 5.0);
 
     gnss_meas_type = config.param<std::string>("gnss", "gnss_meas_type", "enu");
+
+    T_base_link_gnss = config.param<Eigen::Isometry3d>("gnss", "T_base_link_gnss", Eigen::Isometry3d::Identity());
 
     transformation_initialized = false;
     T_world_utm.setIdentity();
@@ -129,15 +131,19 @@ public:
     cov_x = nav_sat_fix_msg->position_covariance[0]; // Covariance for x
     cov_y = nav_sat_fix_msg->position_covariance[4]; // Covariance for y
     cov_z = nav_sat_fix_msg->position_covariance[8]; // Covariance for z
-        
+    
+    // // bring the gnss data in base link reference frame
+    Eigen::Vector3d point(x,y,z);
+    Eigen::Vector3d transformed_gnss_data = T_base_link_gnss * point;
+
     Eigen::Vector4d gnss_data;
     Eigen::Vector4d gnss_covariance;
     const double stamp = to_sec(nav_sat_fix_msg->header.stamp);
     // logger->info("Covariances: {}, {}, {}", cov_x, cov_y, cov_z);
-    gnss_data << stamp, x, y, z;
+    gnss_data << stamp, transformed_gnss_data.x(), transformed_gnss_data.y(), transformed_gnss_data.z();
     gnss_covariance << stamp, cov_x, cov_y, cov_z;
 
-    // Push GNSS data and RTK status into respective queues
+    // Push GNSS data and covariances into respective queues
     input_gnss_queue.push_back(gnss_data);
     gnss_covariances_queue.push_back(gnss_covariance);
   }
@@ -367,9 +373,10 @@ private:
   std::vector<Eigen::Vector4d> submap_covariances;
 
   std::string gnss_topic;
+  std::string gnss_meas_type;
+  Eigen::Isometry3d T_base_link_gnss;
   Eigen::Vector3d prior_inf_scale;
   double min_baseline;
-  std::string gnss_meas_type;
 
   bool transformation_initialized;
   Eigen::Isometry3d T_world_utm;
