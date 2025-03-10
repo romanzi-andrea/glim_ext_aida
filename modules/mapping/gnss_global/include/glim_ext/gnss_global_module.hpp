@@ -451,43 +451,16 @@ public:
               
           const StatusVec gnss_status = submap_status.back();
 
-          if (gnss_status.status == 2) {          // intialize the transformation only if GNSS is in RTK
-            Eigen::Vector3d mean_est = Eigen::Vector3d::Zero();
+          if (gnss_status.status == 2) {          // initialize the transformation only if GNSS is in RTK
             Eigen::Vector3d mean_gnss = Eigen::Vector3d::Zero();
-            for (int i = 0; i < submaps.size(); i++) {
-                mean_est += submaps[i]->T_world_origin.translation();
-                // mean_gnss += submap_coords[i].tail<3>();
-            }
-            mean_est /= submaps.size();
-            // mean_gnss /= submaps.size();
 
-            // mean_est = submaps.back()->T_world_origin.translation();
             mean_gnss = submap_coords.back().tail<3>();
 
-            Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
-            for (int i = 0; i < submaps.size(); i++) {
-                const Eigen::Vector3d centered_est = submaps[i]->T_world_origin.translation() - mean_est;
-                const Eigen::Vector3d centered_gnss = submap_coords[i].tail<3>() - mean_gnss;
-                cov += centered_gnss * centered_est.transpose();
-            }
-            cov /= submaps.size();
-
-            const Eigen::JacobiSVD<Eigen::Matrix2d> svd(cov.block<2, 2>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
-            const Eigen::Matrix2d U = svd.matrixU();
-            const Eigen::Matrix2d V = svd.matrixV();
-            const Eigen::Matrix2d D = svd.singularValues().asDiagonal();
-            Eigen::Matrix2d S = Eigen::Matrix2d::Identity();
-
-            const double det = U.determinant() * V.determinant();
-            if (det < 0.0) {
-                S(1, 1) = -1;
-            }
-
             Eigen::Isometry3d T_utm_world = Eigen::Isometry3d::Identity();
-            T_utm_world.linear().block<2, 2>(0, 0) = U * S * V.transpose();
-            T_utm_world.translation() = mean_gnss - T_utm_world.linear() * mean_est;
 
-            T_world_utm = T_utm_world.inverse();
+            T_utm_world.translation() = mean_gnss;
+
+            // T_world_utm = T_utm_world.inverse();
 
             for (int i = 0; i < submaps.size(); i++) {
                 const Eigen::Vector3d gnss = T_world_utm * submap_coords[i].tail<3>();
@@ -503,6 +476,64 @@ public:
           }
         }
 
+        // Initialize T_world_utm if is not already intialized and if enough space has been travelled and the covariance of the gps is small enough
+        // if (!transformation_initialized && !submaps.empty() && 
+        //     (submaps.front()->T_world_origin.inverse() * submaps.back()->T_world_origin).translation().norm() > min_baseline) { 
+              
+        //   const StatusVec gnss_status = submap_status.back();
+
+        //   if (gnss_status.status == 2) {          // intialize the transformation only if GNSS is in RTK
+        //     Eigen::Vector3d mean_est = Eigen::Vector3d::Zero();
+        //     Eigen::Vector3d mean_gnss = Eigen::Vector3d::Zero();
+        //     for (int i = 0; i < submaps.size(); i++) {
+        //         mean_est += submaps[i]->T_world_origin.translation();
+        //         // mean_gnss += submap_coords[i].tail<3>();
+        //     }
+        //     mean_est /= submaps.size();
+        //     // mean_gnss /= submaps.size();
+
+        //     // mean_est = submaps.back()->T_world_origin.translation();
+        //     mean_gnss = submap_coords.back().tail<3>();
+
+        //     Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        //     for (int i = 0; i < submaps.size(); i++) {
+        //         const Eigen::Vector3d centered_est = submaps[i]->T_world_origin.translation() - mean_est;
+        //         const Eigen::Vector3d centered_gnss = submap_coords[i].tail<3>() - mean_gnss;
+        //         cov += centered_gnss * centered_est.transpose();
+        //     }
+        //     cov /= submaps.size();
+
+        //     const Eigen::JacobiSVD<Eigen::Matrix2d> svd(cov.block<2, 2>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
+        //     const Eigen::Matrix2d U = svd.matrixU();
+        //     const Eigen::Matrix2d V = svd.matrixV();
+        //     const Eigen::Matrix2d D = svd.singularValues().asDiagonal();
+        //     Eigen::Matrix2d S = Eigen::Matrix2d::Identity();
+
+        //     const double det = U.determinant() * V.determinant();
+        //     if (det < 0.0) {
+        //         S(1, 1) = -1;
+        //     }
+
+        //     Eigen::Isometry3d T_utm_world = Eigen::Isometry3d::Identity();
+        //     T_utm_world.linear().block<2, 2>(0, 0) = U * S * V.transpose();
+        //     T_utm_world.translation() = mean_gnss - T_utm_world.linear() * mean_est;
+
+        //     T_world_utm = T_utm_world.inverse();
+
+        //     for (int i = 0; i < submaps.size(); i++) {
+        //         const Eigen::Vector3d gnss = T_world_utm * submap_coords[i].tail<3>();
+        //         logger->debug("submap={} gnss={}", convert_to_string(submaps[i]->T_world_origin.translation().eval()), convert_to_string(gnss));
+        //     }
+
+        //     logger->info("T_world_utm={}", convert_to_string(T_world_utm));
+        //     transformation_initialized = true;
+        //   } else {
+        //     counter = counter + 1;
+        //     if (!(counter % 100))
+        //       logger->info("Cannot initialize Gnss because the RTK correction is missing!");
+        //   }
+        // }
+
         // Add GPS factor
         if (transformation_initialized) {
             const Eigen::Vector3d xyz = submap_coords.back().tail<3>();
@@ -517,6 +548,7 @@ public:
             switch (gnss_status.status) {
               case EstimationStatus::STATUS_GNSS_RTK:
                   sigma << prior_inf_scale * RTK_case_weight;
+                  logger->info("Adding a gnss pose with pose {}", convert_to_string(xyz));
                   logger->info("Adding a gnss pose with status RTK with noise {}", convert_to_string(sigma));
 
                   break;

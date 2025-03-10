@@ -13,12 +13,12 @@
     ],
     "min_baseline": 5.0,
     "prior_inf_scale": [
-      0.003,
-      0.003,
-      0.003
+      0.001,
+      0.001,
+      0.01
     ],
     "RTK_case_weight": 1.0,
     "NORMAL_case_weight": 100.0,
-    "OUTAGE_case_weight": 10000.0
+    "OUTAGE_case_weight": 1000.0
   }
 }
